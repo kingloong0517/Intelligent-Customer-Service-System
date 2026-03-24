@@ -124,20 +124,25 @@ def create_access_token(data: dict, expires_delta: Optional[datetime.timedelta] 
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=401,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
+        print(f"收到的token: {token}")
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        print(f"解码后的payload: {payload}")
         username: str = payload.get("sub")
+        print(f"获取到的用户名: {username}")
         if username is None:
             raise credentials_exception
-    except JWTError:
+    except JWTError as e:
+        print(f"JWT解码错误: {type(e).__name__}: {str(e)}")
         raise credentials_exception
     user = get_user_by_username(db, username=username)
+    print(f"查询到的用户: {user}")
     if user is None:
         raise credentials_exception
     return user
@@ -154,7 +159,7 @@ class UserInfo(BaseModel):
     created_at: datetime.datetime
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 class Token(BaseModel):
     access_token: str
@@ -178,7 +183,7 @@ class Message(BaseModel):
     created_at: datetime.datetime
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 # 会话相关模型
 class ConversationBase(BaseModel):
@@ -194,7 +199,7 @@ class ConversationInfo(ConversationBase):
     updated_at: datetime.datetime
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 # 用户要求的历史记录模型格式
 class ChatHistory(BaseModel):
@@ -291,9 +296,15 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 # 获取会话列表
 @app.get("/conversations", response_model=List[ConversationInfo])
 def get_conversations(current_user = Depends(get_current_user), db: Session = Depends(get_db)):
-    # 获取当前用户的所有会话
-    conversations = db.query(Conversation).filter(Conversation.user_id == current_user.id).order_by(Conversation.updated_at.desc()).all()
-    return conversations
+    try:
+        # 获取当前用户的所有会话
+        conversations = db.query(Conversation).filter(Conversation.user_id == current_user.id).order_by(Conversation.updated_at.desc()).all()
+        return conversations
+    except Exception as e:
+        print(f"获取会话列表错误: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"获取会话列表失败: {str(e)}")
 
 # 创建新会话
 @app.post("/conversations", response_model=ConversationInfo)
