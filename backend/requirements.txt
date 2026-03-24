@@ -1,0 +1,8 @@
+fastapi==0.95.2
+uvicorn==0.22.0
+sqlalchemy==2.0.15
+pydantic==1.10.7
+python-dotenv==1.0.0
+requests==2.31.0  # 添加 requests 用于调用智谱 API
+passlib[bcrypt]==1.7.4  # 用于密码哈希
+python-jose[cryptography]==3.3.0  # 用于 JWT 认证
