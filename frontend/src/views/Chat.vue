@@ -14,8 +14,23 @@
           :class="{ active: currentConversationId === conversation.id }"
           @click="switchConversation(conversation.id)"
         >
-          <div class="conversation-title">{{ conversation.title }}</div>
-          <div class="conversation-time">{{ formatTime(conversation.updated_at) }}</div>
+          <div class="conversation-main">
+            <div class="conversation-title-container">
+              <div class="conversation-title">{{ conversation.title }}</div>
+              <el-tag 
+                :type="getStatusTagType(conversation.status)" 
+                size="small"
+                class="conversation-status"
+              >
+                {{ getStatusText(conversation.status) }}
+              </el-tag>
+            </div>
+            <div v-if="conversation.last_message" class="conversation-last-message">{{ conversation.last_message }}</div>
+            <div class="conversation-footer">
+              <div class="conversation-time">{{ formatTime(conversation.updated_at) }}</div>
+              <span class="message-count">{{ conversation.message_count }} 条</span>
+            </div>
+          </div>
           <el-button 
             type="danger" 
             size="mini" 
@@ -31,8 +46,33 @@
     <!-- 右侧聊天区域 -->
     <div class="chat-area">
       <div class="chat-header">
-        <h2>{{ currentConversation?.title || 'AI 聊天' }}</h2>
-        <el-button type="warning" @click="handleLogout">退出登录</el-button>
+        <div class="chat-header-left">
+          <h2>{{ currentConversation?.title || 'AI 聊天' }}</h2>
+          <el-tag 
+            v-if="currentConversation?.status" 
+            :type="getStatusTagType(currentConversation.status)" 
+            size="small"
+            class="header-status-tag"
+          >
+            {{ getStatusText(currentConversation.status) }}
+          </el-tag>
+          <span v-if="currentConversation?.message_count" class="message-count">
+            {{ currentConversation.message_count }} 条消息
+          </span>
+        </div>
+        <div class="chat-header-right">
+          <el-select 
+            v-model="currentConversationStatus" 
+            placeholder="修改状态" 
+            size="small"
+            @change="updateConversationStatus"
+          >
+            <el-option label="进行中" value="active"></el-option>
+            <el-option label="已结束" value="ended"></el-option>
+            <el-option label="已归档" value="archived"></el-option>
+          </el-select>
+          <el-button type="warning" @click="handleLogout">退出登录</el-button>
+        </div>
       </div>
       
       <div v-if="currentConversationId" class="chat-messages">
@@ -43,10 +83,12 @@
           class="message-item"
         >
           <!-- 显示用户消息（如果存在） -->
-          <!-- 显示用户消息（如果存在） -->
           <div v-if="msg.message" class="message-bubble user-message">
             <div class="message-header">
               <strong class="message-author">我</strong>
+              <el-tag v-if="msg.category" type="success" size="small" class="message-category">
+                {{ msg.category }}
+              </el-tag>
             </div>
             <div class="message-content" v-html="renderMarkdown(msg.message)"></div>
           </div>
@@ -66,6 +108,33 @@
       </div>
       
       <div class="chat-input" v-if="currentConversationId">
+        <!-- 客服问题分类选择器 -->
+        <div class="category-selector">
+          <el-select v-model="selectedCategory" placeholder="请选择问题分类" size="small" style="width: 200px; margin-bottom: 12px;">
+            <el-option
+              v-for="category in categories"
+              :key="category.id"
+              :label="category.name"
+              :value="category.name"
+            >
+              <div>
+                <span>{{ category.name }}</span>
+                <span class="category-desc">{{ category.description }}</span>
+              </div>
+            </el-option>
+          </el-select>
+          <el-tag 
+            v-for="category in recentCategories" 
+            :key="category" 
+            type="info" 
+            size="small" 
+            @click="selectedCategory = category"
+            class="recent-category"
+          >
+            {{ category }}
+          </el-tag>
+        </div>
+        
         <el-input
           v-model="userInput"
           type="textarea"
@@ -139,6 +208,20 @@ const conversations = ref([])
 const currentConversationId = ref(null)
 const showCreateDialog = ref(false)
 const newConversationTitle = ref('')
+
+// 客服问题分类相关变量
+const categories = ref([
+  { id: 1, name: '账户问题', description: '登录、注册、密码等' },
+  { id: 2, name: '订单咨询', description: '下单、支付、物流等' },
+  { id: 3, name: '产品咨询', description: '产品功能、使用方法等' },
+  { id: 4, name: '售后问题', description: '退换货、维修等' },
+  { id: 5, name: '其他问题', description: '其他咨询' }
+])
+const recentCategories = ref([])
+const selectedCategory = ref('')
+
+// 会话状态相关变量
+const currentConversationStatus = ref('')
 
 // 当前会话
 const currentConversation = computed(() => {
@@ -283,10 +366,81 @@ const deleteConversation = async (conversationId) => {
   }
 }
 
+// 获取状态标签类型
+const getStatusTagType = (status) => {
+  switch (status) {
+    case 'active':
+      return 'success'
+    case 'ended':
+      return 'info'
+    case 'archived':
+      return 'warning'
+    default:
+      return 'default'
+  }
+}
+
+// 获取状态文本
+const getStatusText = (status) => {
+  switch (status) {
+    case 'active':
+      return '进行中'
+    case 'ended':
+      return '已结束'
+    case 'archived':
+      return '已归档'
+    default:
+      return status
+  }
+}
+
 // 切换会话
 const switchConversation = (conversationId) => {
   currentConversationId.value = conversationId
   loadChatHistory(conversationId)
+  
+  // 更新当前会话状态
+  const conversation = conversations.value.find(c => c.id === conversationId)
+  if (conversation) {
+    currentConversationStatus.value = conversation.status
+  }
+}
+
+// 更新会话状态
+const updateConversationStatus = async () => {
+  if (!currentConversationId.value || !currentConversationStatus.value) {
+    return
+  }
+  
+  try {
+    const token = localStorage.getItem('token')
+    const response = await fetch(`/api/conversations/${currentConversationId.value}/status`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': token ? `Bearer ${token}` : ''
+      },
+      body: JSON.stringify({
+        status: currentConversationStatus.value
+      })
+    })
+    
+    if (response.ok) {
+      ElMessage.success('会话状态已更新')
+      
+      // 更新本地会话列表
+      const conversationIndex = conversations.value.findIndex(c => c.id === currentConversationId.value)
+      if (conversationIndex !== -1) {
+        conversations.value[conversationIndex].status = currentConversationStatus.value
+      }
+    } else {
+      const errorText = await response.text()
+      ElMessage.error(`更新会话状态失败: ${errorText}`)
+    }
+  } catch (error) {
+    console.error('更新会话状态失败:', error)
+    ElMessage.error('更新会话状态失败')
+  }
 }
 
 // 处理回车键
@@ -322,7 +476,8 @@ const sendMessage = async () => {
       message: message,       // 用户消息
       response: '',           // AI回复（初始为空）
       created_at: new Date().toISOString(),
-      user_id: null // 临时消息，没有真实ID
+      user_id: null, // 临时消息，没有真实ID
+      category: selectedCategory.value || '其他问题' // 添加分类信息
     }
     
     // 添加到聊天消息列表
@@ -351,9 +506,28 @@ const sendMessage = async () => {
       },
       body: JSON.stringify({
         user_input: message,
-        conversation_id: currentConversationId.value
+        conversation_id: currentConversationId.value,
+        category: selectedCategory.value // 添加分类信息到请求体
       })
     })
+    
+    // 更新最近使用的分类
+    if (selectedCategory.value) {
+      // 如果分类已经存在于最近使用列表中，先移除
+      const existingIndex = recentCategories.value.indexOf(selectedCategory.value)
+      if (existingIndex !== -1) {
+        recentCategories.value.splice(existingIndex, 1)
+      }
+      // 将分类添加到最近使用列表的开头
+      recentCategories.value.unshift(selectedCategory.value)
+      // 限制最近使用列表的长度为5
+      if (recentCategories.value.length > 5) {
+        recentCategories.value.pop()
+      }
+    }
+    
+    // 重置分类选择
+    selectedCategory.value = ''
     
     if (!response.ok) {
       const errorText = await response.text()
@@ -790,5 +964,160 @@ onMounted(() => {
 .chat-messages th {
   background-color: #f8f9fa;
   font-weight: bold;
+}
+
+/* 分类选择器样式 */
+.category-selector {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.category-desc {
+  font-size: 12px;
+  color: #6c757d;
+  margin-left: 8px;
+}
+
+.recent-category {
+  cursor: pointer;
+  margin-bottom: 8px;
+  transition: all 0.3s ease;
+}
+
+.recent-category:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* 消息分类标签样式 */
+.message-category {
+  margin-left: 12px;
+  padding: 2px 8px;
+  font-size: 12px;
+  border-radius: 10px;
+}
+
+/* 会话列表样式增强 */
+.conversation-item {
+  display: flex;
+  align-items: flex-start;
+  padding: 16px;
+  margin-bottom: 8px;
+  background-color: #ffffff;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  position: relative;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.conversation-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.conversation-title-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.conversation-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #212529;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.conversation-status {
+  margin-left: auto;
+}
+
+.conversation-last-message {
+  font-size: 12px;
+  color: #6c757d;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conversation-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.message-count {
+  background-color: #f3f4f6;
+  color: #6b7280;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+/* 聊天头部样式增强 */
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #dee2e6;
+  background-color: #ffffff;
+}
+
+.chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.chat-header-left h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #212529;
+}
+
+.header-status-tag {
+  font-size: 12px;
+}
+
+.chat-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .chat-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  
+  .chat-header-left,
+  .chat-header-right {
+    justify-content: space-between;
+  }
+  
+  .conversation-title-container {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  
+  .conversation-status {
+    align-self: flex-start;
+  }
 }
 </style>

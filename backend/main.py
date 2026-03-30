@@ -72,6 +72,17 @@ class Conversation(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     title = Column(String, nullable=False)
+    status = Column(String, default="active", nullable=False)  # 会话状态：active(进行中), ended(已结束), archived(已归档)
+    last_message = Column(String, nullable=True)  # 最后一条消息预览
+    message_count = Column(Integer, default=0, nullable=False)  # 消息数量
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+class Category(Base):
+    __tablename__ = "categories"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False, index=True)  # 分类名称
+    description = Column(String, nullable=True)  # 分类描述
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
@@ -82,15 +93,117 @@ class ChatMessage(Base):
     conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False, index=True)
     message = Column(String, index=True)
     response = Column(String)
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True, index=True)  # 分类ID关联
+    category = Column(String, nullable=True, index=True)  # 保留原字段用于向后兼容
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 # 创建数据库表
 Base.metadata.create_all(bind=engine)
 print("数据库表创建完成")
+
+# 检查并添加category字段到chat_messages表
 from sqlalchemy import inspect
 inspector = inspect(engine)
 tables = inspector.get_table_names()
 print(f"现有表: {tables}")
+
+# 检查chat_messages表是否有category字段
+if 'chat_messages' in tables:
+    chat_columns = inspector.get_columns('chat_messages')
+    chat_column_names = [col['name'] for col in chat_columns]
+    
+    if 'category' not in chat_column_names:
+        # 使用raw SQL添加字段
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN category VARCHAR"))
+            conn.commit()
+            print("已添加category字段到chat_messages表")
+    else:
+        print("chat_messages表已包含category字段")
+
+# 检查并更新conversations表结构
+if 'conversations' in tables:
+    conv_columns = inspector.get_columns('conversations')
+    conv_column_names = [col['name'] for col in conv_columns]
+    
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        # 添加status字段
+        if 'status' not in conv_column_names:
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN status VARCHAR DEFAULT 'active'")).commit()
+            print("已添加status字段到conversations表")
+        else:
+            print("conversations表已包含status字段")
+        
+        # 添加last_message字段
+        if 'last_message' not in conv_column_names:
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN last_message VARCHAR")).commit()
+            print("已添加last_message字段到conversations表")
+        else:
+            print("conversations表已包含last_message字段")
+        
+        # 添加message_count字段
+        if 'message_count' not in conv_column_names:
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN message_count INTEGER DEFAULT 0")).commit()
+            print("已添加message_count字段到conversations表")
+        else:
+            print("conversations表已包含message_count字段")
+        
+        # 更新现有数据
+        print("更新现有会话的message_count和last_message...")
+        
+        # 获取每个会话的消息数量和最后一条消息
+        conn.execute(text(""" 
+            UPDATE conversations SET 
+                message_count = (SELECT COUNT(*) FROM chat_messages WHERE chat_messages.conversation_id = conversations.id),
+                last_message = (SELECT SUBSTR(message, 1, 50) || CASE WHEN LENGTH(message) > 50 THEN '...' ELSE '' END 
+                                FROM chat_messages 
+                                WHERE chat_messages.conversation_id = conversations.id 
+                                ORDER BY created_at DESC LIMIT 1)
+        """))
+        conn.commit()
+        print("已更新所有会话的消息数量和最后消息预览")
+
+# 检查并创建categories表
+if 'categories' not in tables:
+    # 创建categories表
+    Base.metadata.tables['categories'].create(bind=engine)
+    print("已创建categories表")
+    
+    # 初始化默认分类数据
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        default_categories = [
+            ("账户问题", "登录、注册、密码等相关问题"),
+            ("订单咨询", "下单、支付、物流等相关问题"),
+            ("产品咨询", "产品功能、使用方法等相关问题"),
+            ("售后问题", "退换货、维修等相关问题"),
+            ("其他问题", "其他类型的咨询")
+        ]
+        
+        for name, description in default_categories:
+            conn.execute(text("INSERT INTO categories (name, description) VALUES (?, ?)"), (name, description))
+        
+        conn.commit()
+        print(f"已添加 {len(default_categories)} 个默认分类")
+else:
+    print("categories表已存在")
+
+# 检查chat_messages表是否需要添加category_id字段
+if 'chat_messages' in tables:
+    chat_columns = inspector.get_columns('chat_messages')
+    chat_column_names = [col['name'] for col in chat_columns]
+    
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        # 添加category_id字段（如果不存在）
+        if 'category_id' not in chat_column_names:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN category_id INTEGER")).commit()
+            print("已添加category_id字段到chat_messages表")
+        else:
+            print("chat_messages表已包含category_id字段")
+        
 if 'users' in tables:
     print("users表字段:", inspector.get_columns('users'))
 
@@ -172,6 +285,7 @@ class TokenData(BaseModel):
 class ChatRequest(BaseModel):
     user_input: str
     conversation_id: int
+    category: Optional[str] = None  # 添加分类字段
 
 class ChatResponse(BaseModel):
     reply: str
@@ -181,6 +295,7 @@ class Message(BaseModel):
     message: str
     response: str
     created_at: datetime.datetime
+    category: Optional[str] = None  # 添加分类字段
 
     class Config:
         orm_mode = True
@@ -188,6 +303,7 @@ class Message(BaseModel):
 # 会话相关模型
 class ConversationBase(BaseModel):
     title: str
+    status: Optional[str] = "active"  # 会话状态：active(进行中), ended(已结束), archived(已归档)
 
 class ConversationCreate(ConversationBase):
     pass
@@ -195,6 +311,8 @@ class ConversationCreate(ConversationBase):
 class ConversationInfo(ConversationBase):
     id: int
     user_id: int
+    last_message: Optional[str] = None  # 最后一条消息预览
+    message_count: int = 0  # 消息数量
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
@@ -208,6 +326,7 @@ class ChatHistory(BaseModel):
     ai_reply: str
     timestamp: datetime.datetime
     conversation_id: int
+    category: Optional[str] = None  # 添加分类字段
 
     class Config:
         orm_mode = True
@@ -220,8 +339,28 @@ class ChatHistory(BaseModel):
             user_input=obj.message,
             ai_reply=obj.response,
             timestamp=obj.created_at,
-            conversation_id=obj.conversation_id
+            conversation_id=obj.conversation_id,
+            category=obj.category  # 添加分类映射
         )
+
+# 问题分类相关模型
+class CategoryBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class CategoryCreate(CategoryBase):
+    pass
+
+class CategoryUpdate(CategoryBase):
+    pass
+
+class CategoryInfo(CategoryBase):
+    id: int
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+    class Config:
+        orm_mode = True
 
 # 用户注册接口
 @app.post("/register", response_model=UserInfo)
@@ -340,6 +479,108 @@ def delete_conversation(conversation_id: int, current_user = Depends(get_current
     
     return {"message": "会话已删除"}
 
+# 更新会话状态
+@app.put("/conversations/{conversation_id}/status")
+def update_conversation_status(
+    conversation_id: int, 
+    status_update: dict,  # 接收状态更新请求
+    current_user = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    # 查找会话
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.user_id == current_user.id
+    ).first()
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    
+    # 验证状态值
+    valid_statuses = ["active", "ended", "archived"]
+    new_status = status_update.get("status")
+    
+    if not new_status or new_status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"无效的状态值，必须是 {', '.join(valid_statuses)} 中的一个")
+    
+    # 更新状态
+    conversation.status = new_status
+    db.commit()
+    db.refresh(conversation)
+    
+    return {"message": "会话状态已更新", "conversation": conversation}
+
+# 问题分类接口
+
+# 获取所有分类
+@app.get("/categories", response_model=List[CategoryInfo])
+def get_categories(db: Session = Depends(get_db)):
+    categories = db.query(Category).all()
+    return categories
+
+# 创建新分类
+@app.post("/categories", response_model=CategoryInfo)
+def create_category(category: CategoryCreate, db: Session = Depends(get_db)):
+    # 检查分类是否已存在
+    existing_category = db.query(Category).filter(Category.name == category.name).first()
+    if existing_category:
+        raise HTTPException(status_code=400, detail="分类名称已存在")
+    
+    # 创建新分类
+    db_category = Category(
+        name=category.name,
+        description=category.description
+    )
+    db.add(db_category)
+    db.commit()
+    db.refresh(db_category)
+    
+    return db_category
+
+# 获取单个分类
+@app.get("/categories/{category_id}", response_model=CategoryInfo)
+def get_category(category_id: int, db: Session = Depends(get_db)):
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="分类不存在")
+    return category
+
+# 更新分类
+@app.put("/categories/{category_id}", response_model=CategoryInfo)
+def update_category(category_id: int, category: CategoryUpdate, db: Session = Depends(get_db)):
+    # 查找分类
+    db_category = db.query(Category).filter(Category.id == category_id).first()
+    if not db_category:
+        raise HTTPException(status_code=404, detail="分类不存在")
+    
+    # 检查新名称是否与其他分类重复
+    if category.name != db_category.name:
+        existing_category = db.query(Category).filter(Category.name == category.name).first()
+        if existing_category:
+            raise HTTPException(status_code=400, detail="分类名称已存在")
+    
+    # 更新分类信息
+    db_category.name = category.name
+    db_category.description = category.description
+    db.commit()
+    db.refresh(db_category)
+    
+    return db_category
+
+# 删除分类
+@app.delete("/categories/{category_id}")
+def delete_category(category_id: int, db: Session = Depends(get_db)):
+    # 查找分类
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="分类不存在")
+    
+    # 删除分类
+    db.delete(category)
+    db.commit()
+    
+    return {"message": "分类已删除"}
+
 import asyncio
 
 # 聊天接口 - 需要认证（流式输出）
@@ -387,12 +628,20 @@ def chat(chat_request: ChatRequest, current_user = Depends(get_current_user), db
             user_id=current_user.id,
             conversation_id=chat_request.conversation_id,
             message=chat_request.user_input,
-            response=reply
+            response=reply,
+            category=chat_request.category  # 保存分类信息
         )
         db.add(chat_message)
         
-        # 更新会话的更新时间
+        # 更新会话信息
         conversation.updated_at = datetime.datetime.utcnow()
+        
+        # 更新最后一条消息预览（最多50个字符）
+        message_preview = chat_request.user_input[:50] + "..." if len(chat_request.user_input) > 50 else chat_request.user_input
+        conversation.last_message = message_preview
+        
+        # 更新消息数量
+        conversation.message_count = conversation.message_count + 1 if conversation.message_count else 1
         
         db.commit()
         db.refresh(chat_message)
