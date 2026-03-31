@@ -131,21 +131,24 @@ if 'conversations' in tables:
     with engine.connect() as conn:
         # 添加status字段
         if 'status' not in conv_column_names:
-            conn.execute(text("ALTER TABLE conversations ADD COLUMN status VARCHAR DEFAULT 'active'")).commit()
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN status VARCHAR DEFAULT 'active'"))
+            conn.commit()
             print("已添加status字段到conversations表")
         else:
             print("conversations表已包含status字段")
         
         # 添加last_message字段
         if 'last_message' not in conv_column_names:
-            conn.execute(text("ALTER TABLE conversations ADD COLUMN last_message VARCHAR")).commit()
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN last_message VARCHAR"))
+            conn.commit()
             print("已添加last_message字段到conversations表")
         else:
             print("conversations表已包含last_message字段")
         
         # 添加message_count字段
         if 'message_count' not in conv_column_names:
-            conn.execute(text("ALTER TABLE conversations ADD COLUMN message_count INTEGER DEFAULT 0")).commit()
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN message_count INTEGER DEFAULT 0"))
+            conn.commit()
             print("已添加message_count字段到conversations表")
         else:
             print("conversations表已包含message_count字段")
@@ -199,7 +202,8 @@ if 'chat_messages' in tables:
     with engine.connect() as conn:
         # 添加category_id字段（如果不存在）
         if 'category_id' not in chat_column_names:
-            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN category_id INTEGER")).commit()
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN category_id INTEGER"))
+            conn.commit()
             print("已添加category_id字段到chat_messages表")
         else:
             print("chat_messages表已包含category_id字段")
@@ -259,6 +263,14 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
     return user
+
+# AI分类请求模型
+class AIClassifyRequest(BaseModel):
+    user_input: str
+
+# AI分类响应模型
+class AIClassifyResponse(BaseModel):
+    category: str
 
 # Pydantic 模型
 # 用户相关模型
@@ -387,6 +399,9 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(db_user)
         return UserInfo.from_orm(db_user)
+    except HTTPException:
+        # 如果是已经定义好的HTTPException（如用户名已存在），直接重新抛出
+        raise
     except Exception as e:
         print(f"注册错误详情: {type(e).__name__}: {str(e)}")
         import traceback
@@ -580,6 +595,84 @@ def delete_category(category_id: int, db: Session = Depends(get_db)):
     db.commit()
     
     return {"message": "分类已删除"}
+
+# AI自动分类接口
+@app.post("/ai-classify", response_model=AIClassifyResponse)
+def ai_classify(request: AIClassifyRequest, db: Session = Depends(get_db)):
+    try:
+        # 获取所有有效分类
+        categories = db.query(Category).all()
+        category_names = [cat.name for cat in categories]
+        
+        # 构造分类Prompt
+        classify_prompt = f"""你是一个客服系统的分类助手，请根据用户的问题将其分类为以下类别之一：
+{', '.join(category_names)}
+
+请严格按照要求进行分类：
+1. 只返回分类结果，不要添加任何解释或说明
+2. 必须从给定的分类列表中选择，不能自创分类
+3. 如果无法确定分类，返回'其他问题'
+
+用户问题：{request.user_input}
+分类结果："""
+        
+        # 调用智谱GLM API进行分类
+        headers = {
+            "Authorization": f"Bearer {ZHIPU_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": "glm-4",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "你是一个专业的客服分类助手，只能输出指定的分类名称。"
+                },
+                {
+                    "role": "user",
+                    "content": classify_prompt
+                }
+            ],
+            "temperature": 0.1,  # 降低温度，使结果更稳定
+            "max_tokens": 10  # 限制输出长度
+        }
+        
+        response = requests.post(ZHIPU_API_URL, headers=headers, json=data)
+        response.raise_for_status()
+        result = response.json()
+        
+        # 提取分类结果
+        category = result["choices"][0]["message"]["content"].strip()
+        
+        # 验证分类结果是否有效
+        if category not in category_names:
+            category = "其他问题"  # 默认分类
+        
+        return AIClassifyResponse(category=category)
+    except requests.RequestException as e:
+        print(f"调用GLM API错误: {str(e)}")
+        # 如果API调用失败，使用模拟分类逻辑
+        # 基于关键词的简单分类规则
+        user_input = request.user_input.lower()
+        
+        # 简单的关键词分类
+        if any(keyword in user_input for keyword in ["登录", "注册", "密码", "账户", "账号"]):
+            category = "账户问题"
+        elif any(keyword in user_input for keyword in ["订单", "支付", "物流", "发货", "运费"]):
+            category = "订单咨询"
+        elif any(keyword in user_input for keyword in ["产品", "功能", "使用", "怎么", "如何"]):
+            category = "产品咨询"
+        elif any(keyword in user_input for keyword in ["退货", "换货", "维修", "售后", "退款"]):
+            category = "售后问题"
+        else:
+            category = "其他问题"
+        
+        return AIClassifyResponse(category=category)
+    except Exception as e:
+        print(f"分类错误: {str(e)}")
+        # 发生任何错误都返回默认分类
+        return AIClassifyResponse(category="其他问题")
 
 import asyncio
 

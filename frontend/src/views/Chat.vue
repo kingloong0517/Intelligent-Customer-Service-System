@@ -108,8 +108,8 @@
       </div>
       
       <div class="chat-input" v-if="currentConversationId">
-        <!-- 客服问题分类选择器 -->
-        <div class="category-selector">
+        <!-- AI自动分类 - 隐藏手动选择器 -->
+        <div class="category-selector" style="display: none;">
           <el-select v-model="selectedCategory" placeholder="请选择问题分类" size="small" style="width: 200px; margin-bottom: 12px;">
             <el-option
               v-for="category in categories"
@@ -470,6 +470,27 @@ const sendMessage = async () => {
   userInput.value = ''
   
   try {
+    // 获取token
+    const token = localStorage.getItem('token')
+    
+    // 1. 先调用AI分类接口
+    const classifyResponse = await fetch('/api/ai-classify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': token ? `Bearer ${token}` : ''
+      },
+      body: JSON.stringify({
+        user_input: message
+      })
+    })
+    
+    let category = '其他问题' // 默认分类
+    if (classifyResponse.ok) {
+      const classifyResult = await classifyResponse.json()
+      category = classifyResult.category
+    }
+    
     // 创建临时的完整消息项（包含用户消息和AI回复）
     const tempMessage = {
       id: Date.now(),
@@ -477,7 +498,7 @@ const sendMessage = async () => {
       response: '',           // AI回复（初始为空）
       created_at: new Date().toISOString(),
       user_id: null, // 临时消息，没有真实ID
-      category: selectedCategory.value || '其他问题' // 添加分类信息
+      category: category // 使用AI自动分类结果
     }
     
     // 添加到聊天消息列表
@@ -494,10 +515,7 @@ const sendMessage = async () => {
       }
     }, 100)
     
-    // 获取token
-    const token = localStorage.getItem('token')
-    
-    // 使用fetch API接收流式响应
+    // 2. 使用分类结果发送聊天请求
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: {
@@ -507,27 +525,24 @@ const sendMessage = async () => {
       body: JSON.stringify({
         user_input: message,
         conversation_id: currentConversationId.value,
-        category: selectedCategory.value // 添加分类信息到请求体
+        category: category // 使用AI分类结果
       })
     })
     
-    // 更新最近使用的分类
-    if (selectedCategory.value) {
+    // 更新最近使用的分类（使用AI分类结果）
+    if (category) {
       // 如果分类已经存在于最近使用列表中，先移除
-      const existingIndex = recentCategories.value.indexOf(selectedCategory.value)
+      const existingIndex = recentCategories.value.indexOf(category)
       if (existingIndex !== -1) {
         recentCategories.value.splice(existingIndex, 1)
       }
       // 将分类添加到最近使用列表的开头
-      recentCategories.value.unshift(selectedCategory.value)
+      recentCategories.value.unshift(category)
       // 限制最近使用列表的长度为5
       if (recentCategories.value.length > 5) {
         recentCategories.value.pop()
       }
     }
-    
-    // 重置分类选择
-    selectedCategory.value = ''
     
     if (!response.ok) {
       const errorText = await response.text()
