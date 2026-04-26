@@ -13,6 +13,7 @@ import datetime
 from dotenv import load_dotenv
 from passlib.context import CryptContext
 from jose import JWTError, jwt
+from openai import OpenAI
 
 # JWT 配置
 SECRET_KEY = "your-secret-key-change-in-production"  # 生产环境中应该使用环境变量
@@ -27,11 +28,33 @@ pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 # 加载环境变量
-load_dotenv()
+import os
+from dotenv import load_dotenv
 
-# 配置智谱 GLM API
-ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY")
-ZHIPU_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+# 获取当前文件所在目录
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 确保load_dotenv能找到.env文件
+load_dotenv(os.path.join(current_dir, '.env'))
+
+# 配置 DeepSeek API
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
+# 备用方案：如果环境变量未加载，直接设置API Key
+if not DEEPSEEK_API_KEY:
+    DEEPSEEK_API_KEY = "sk-7fa296b76d8a4aacb32b9835a5b42f6f"
+    print("使用备用方案设置API Key")
+
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+
+# 打印API Key加载情况
+print(f"从环境变量加载的 DEEPSEEK_API_KEY: {DEEPSEEK_API_KEY}")
+
+# 设置 OPENAI_API_KEY 环境变量，因为 OpenAI SDK 默认会查找这个变量
+if DEEPSEEK_API_KEY:
+    os.environ["OPENAI_API_KEY"] = DEEPSEEK_API_KEY
+    print(f"已设置 OPENAI_API_KEY 环境变量: {os.environ.get('OPENAI_API_KEY')}")
+else:
+    print("警告: DEEPSEEK_API_KEY 环境变量未设置!")
 
 # 配置数据库
 SQLALCHEMY_DATABASE_URL = "sqlite:///./chat.db"
@@ -616,14 +639,24 @@ def ai_classify(request: AIClassifyRequest, db: Session = Depends(get_db)):
 用户问题：{request.user_input}
 分类结果："""
         
-        # 调用智谱GLM API进行分类
+        # 调试输出
+        print(f"用户问题: {request.user_input}")
+        print(f"可用分类: {category_names}")
+        
+        # 直接使用requests库调用DeepSeek API
+        print(f"API Key: {DEEPSEEK_API_KEY}")  # 调试输出
+        
+        # 直接硬编码API Key，确保它能被正确使用
+        api_key = "sk-7fa296b76d8a4aacb32b9835a5b42f6f"
+        print(f"使用硬编码API Key: {api_key}")  # 调试输出
+        
         headers = {
-            "Authorization": f"Bearer {ZHIPU_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         
         data = {
-            "model": "glm-4",
+            "model": "deepseek-chat",
             "messages": [
                 {
                     "role": "system",
@@ -638,20 +671,24 @@ def ai_classify(request: AIClassifyRequest, db: Session = Depends(get_db)):
             "max_tokens": 10  # 限制输出长度
         }
         
-        response = requests.post(ZHIPU_API_URL, headers=headers, json=data)
+        response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=data)
         response.raise_for_status()
         result = response.json()
         
         # 提取分类结果
         category = result["choices"][0]["message"]["content"].strip()
+        print(f"DeepSeek API返回的分类: {category}")
         
         # 验证分类结果是否有效
         if category not in category_names:
+            print(f"分类'{category}'不在预定义列表中，使用默认分类")
             category = "其他问题"  # 默认分类
+        else:
+            print(f"分类'{category}'有效")
         
         return AIClassifyResponse(category=category)
     except requests.RequestException as e:
-        print(f"调用GLM API错误: {str(e)}")
+        print(f"调用DeepSeek API错误: {str(e)}")
         # 如果API调用失败，使用模拟分类逻辑
         # 基于关键词的简单分类规则
         user_input = request.user_input.lower()
