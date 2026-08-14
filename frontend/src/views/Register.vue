@@ -24,8 +24,8 @@
 <script setup>
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { register } from '../api/auth'
 
 const router = useRouter()
 const registerFormRef = ref()
@@ -69,10 +69,7 @@ const handleRegister = async () => {
     loading.value = true
     
     // 调用注册接口
-    await axios.post('/api/register', {
-      username: registerForm.username,
-      password: registerForm.password
-    })
+    await register(registerForm.username, registerForm.password)
     
     ElMessage.success('注册成功，请登录')
     router.push('/login')

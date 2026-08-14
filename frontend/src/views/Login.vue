@@ -21,8 +21,8 @@
 <script setup>
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { login, syncGlobalAuthorization } from '../api/auth'
 
 const router = useRouter()
 const loginFormRef = ref()
@@ -52,21 +52,13 @@ const handleLogin = async () => {
     loading.value = true
     
     // 调用登录接口
-    const response = await axios.post('/api/login', new URLSearchParams({
-      username: loginForm.username,
-      password: loginForm.password
-    }), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    })
+    const { access_token } = await login(loginForm.username, loginForm.password)
     
     // 保存 token 到本地存储
-    const { access_token, token_type } = response.data
     localStorage.setItem('token', access_token)
     
-    // 配置 axios 默认携带 token
-    axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`
+    // 同步全局 axios 的 Authorization
+    syncGlobalAuthorization()
     
     ElMessage.success('登录成功')
     router.push('/chat')

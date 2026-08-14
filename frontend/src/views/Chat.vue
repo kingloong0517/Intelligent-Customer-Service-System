@@ -170,6 +170,17 @@ import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete } from '@element-plus/icons-vue'
 
+// 工程化 API 封装
+import { logout, syncGlobalAuthorization } from '../api/auth'
+import {
+  getConversations,
+  createConversation as apiCreateConversation,
+  deleteConversation as apiDeleteConversation,
+  updateConversationStatus as apiUpdateStatus,
+  getMessages,
+} from '../api/conversations'
+import { aiClassify, chatStream } from '../api/chat'
+
 // Markdown 渲染和代码高亮
 import { marked } from 'marked'
 import hljs from 'highlight.js'
@@ -253,8 +264,8 @@ const formatTime = (timeString) => {
 // 加载会话列表
 const loadConversations = async () => {
   try {
-    const response = await axios.get('/api/conversations')
-    conversations.value = response.data
+    const data = await getConversations()
+    conversations.value = data
     
     // 如果有会话，默认选择第一个
     if (conversations.value.length > 0 && !currentConversationId.value) {
@@ -275,10 +286,8 @@ const loadChatHistory = async (conversationId) => {
   if (!conversationId) return
   
   try {
-    const response = await axios.get('/api/messages', {
-      params: { conversation_id: conversationId }
-    })
-    chatMessages.value = response.data
+    const data = await getMessages(conversationId)
+    chatMessages.value = data
     
     // 滚动到底部
     setTimeout(() => {
@@ -305,15 +314,13 @@ const createConversation = async () => {
   }
   
   try {
-    const response = await axios.post('/api/conversations', {
-      title: newConversationTitle.value.trim()
-    })
+    const data = await apiCreateConversation(newConversationTitle.value.trim())
     
     // 添加到会话列表
-    conversations.value.unshift(response.data)
+    conversations.value.unshift(data)
     
     // 切换到新会话
-    switchConversation(response.data.id)
+    switchConversation(data.id)
     
     // 关闭对话框
     showCreateDialog.value = false
@@ -339,7 +346,7 @@ const deleteConversation = async (conversationId) => {
       type: 'warning'
     })
     
-    await axios.delete(`/api/conversations/${conversationId}`)
+    await apiDeleteConversation(conversationId)
     
     // 从列表中移除
     conversations.value = conversations.value.filter(c => c.id !== conversationId)
@@ -413,17 +420,7 @@ const updateConversationStatus = async () => {
   }
   
   try {
-    const token = localStorage.getItem('token')
-    const response = await fetch(`/api/conversations/${currentConversationId.value}/status`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': token ? `Bearer ${token}` : ''
-      },
-      body: JSON.stringify({
-        status: currentConversationStatus.value
-      })
-    })
+    const response = await apiUpdateStatus(currentConversationId.value, currentConversationStatus.value)
     
     if (response.ok) {
       ElMessage.success('会话状态已更新')
@@ -470,25 +467,13 @@ const sendMessage = async () => {
   userInput.value = ''
   
   try {
-    // 获取token
-    const token = localStorage.getItem('token')
-    
-    // 1. 先调用AI分类接口
-    const classifyResponse = await fetch('/api/ai-classify', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': token ? `Bearer ${token}` : ''
-      },
-      body: JSON.stringify({
-        user_input: message
-      })
-    })
-    
-    let category = '其他问题' // 默认分类
-    if (classifyResponse.ok) {
-      const classifyResult = await classifyResponse.json()
-      category = classifyResult.category
+    // 1. 先调用AI分类接口（request 封装，自动带 token）
+    let category = '其他问题'
+    try {
+      const classifyResult = await aiClassify(message)
+      category = classifyResult.category || '其他问题'
+    } catch (err) {
+      console.warn('AI 分类失败，使用默认分类：其他问题', err)
     }
     
     // 创建临时的完整消息项（包含用户消息和AI回复）
@@ -497,8 +482,8 @@ const sendMessage = async () => {
       message: message,       // 用户消息
       response: '',           // AI回复（初始为空）
       created_at: new Date().toISOString(),
-      user_id: null, // 临时消息，没有真实ID
-      category: category // 使用AI自动分类结果
+      user_id: null,
+      category: category
     }
     
     // 添加到聊天消息列表
@@ -515,84 +500,43 @@ const sendMessage = async () => {
       }
     }, 100)
     
-    // 2. 使用分类结果发送聊天请求
-    const response = await fetch('/api/chat', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': token ? `Bearer ${token}` : ''
-      },
-      body: JSON.stringify({
+    // 2. 使用分类结果发送聊天请求（SSE 流式）
+    await chatStream(
+      {
         user_input: message,
         conversation_id: currentConversationId.value,
-        category: category // 使用AI分类结果
-      })
-    })
-    
-    // 更新最近使用的分类（使用AI分类结果）
-    if (category) {
-      // 如果分类已经存在于最近使用列表中，先移除
-      const existingIndex = recentCategories.value.indexOf(category)
-      if (existingIndex !== -1) {
-        recentCategories.value.splice(existingIndex, 1)
-      }
-      // 将分类添加到最近使用列表的开头
-      recentCategories.value.unshift(category)
-      // 限制最近使用列表的长度为5
-      if (recentCategories.value.length > 5) {
-        recentCategories.value.pop()
-      }
-    }
-    
-    if (!response.ok) {
-      const errorText = await response.text()
-      throw new Error(errorText || '发送消息失败')
-    }
-    
-    // 处理流式响应
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder('utf-8')
-    let buffer = ''
-    
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      
-      // 解码数据
-      buffer += decoder.decode(value, { stream: true })
-      
-      // 按行处理数据
-      let lines = buffer.split('\n')
-      buffer = lines.pop() // 保存不完整的行
-      
-      for (const line of lines) {
-        if (!line.trim()) continue
-        
-        // 解析SSE格式
-        if (line.startsWith('data: ')) {
-          const data = line.substring(6)
-          
-          // 检查是否为完成标记
-          if (data === '[DONE]') {
-            console.log('流式传输完成')
-            break
-          }
-          
-          console.log('接收到字符:', data)
-          // 逐字添加到AI回复
-          tempMessage.response += data
-          
-          // 使用数组索引更新，确保Vue的响应式系统能检测到变化
+        category: category,
+      },
+      {
+        onChar: (char) => {
+          console.log('接收到字符:', char)
+          tempMessage.response += char
           chatMessages.value[messageIndex] = { ...tempMessage }
-          
-          // 滚动到底部
           setTimeout(() => {
             const chatMessagesElement = document.querySelector('.chat-messages')
             if (chatMessagesElement) {
               chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight
             }
           }, 0)
-        }
+        },
+        onDone: () => {
+          console.log('流式传输完成')
+        },
+        onError: (err) => {
+          throw err
+        },
+      }
+    )
+    
+    // 更新最近使用的分类
+    if (category) {
+      const existingIndex = recentCategories.value.indexOf(category)
+      if (existingIndex !== -1) {
+        recentCategories.value.splice(existingIndex, 1)
+      }
+      recentCategories.value.unshift(category)
+      if (recentCategories.value.length > 5) {
+        recentCategories.value.pop()
       }
     }
     
@@ -616,8 +560,10 @@ const sendMessage = async () => {
 
 // 退出登录
 const handleLogout = () => {
-  localStorage.removeItem('token')
+  logout()
+  // 兼容老逻辑：手动清一次全局 axios header
   delete axios.defaults.headers.common['Authorization']
+  syncGlobalAuthorization()
   ElMessage.success('已退出登录')
   router.push('/login')
 }

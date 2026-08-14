@@ -1,504 +1,218 @@
 # AI 客服系统
 
-这是一个完整的 AI 客服系统，采用前后端分离架构，专为企业提供智能客服解决方案。系统集成了问题分类、会话管理、智能回复等核心客服功能，帮助企业高效处理客户咨询。
+企业级 AI 智能客服平台：前后端分离、分层架构、自动问题分类、SSE 流式对话、会话与分类管理。
+
+> 项目已完成工程化重构（功能零变化）：原单体 `main.py` 拆分为 `core/db/models/schemas/services/api` 分层；前端 API 调用统一封装；密钥通过环境变量管理。
 
 ## 技术栈
 
-- **前端**: Vue 3 + Vite + Element Plus
-- **后端**: Python + FastAPI
-- **数据库**: SQLite
+| 层 | 技术 |
+|---|---|
+| 前端 | Vue 3 + Vite 4 + Element Plus + Vue Router + Axios |
+| 后端 | Python 3.11 + FastAPI + SQLAlchemy + PyJWT + python-multipart + requests |
+| 数据库 | SQLite（`chat.db`，自动建表 + 结构迁移 + 数据回填） |
+| AI | DeepSeek API（问题分类 + 智能回复，含关键词兜底） |
+| 流式 | Server-Sent Events（SSE 逐字输出） |
 
 ## 项目结构
 
 ```
 ai_chat/
-├── backend/                  # 后端代码
-│   ├── main.py               # FastAPI 主应用，包含所有API接口
-│   ├── requirements.txt      # 依赖列表
-│   ├── .env                  # 环境变量配置
-│   ├── .env.example          # 环境变量示例
-│   ├── chat.db               # SQLite数据库
-│   └── __pycache__/          # Python编译缓存
-├── frontend/                 # 前端代码
-│   ├── index.html            # HTML 入口
-│   ├── package.json          # 前端依赖
-│   ├── package-lock.json     # 依赖锁定文件
-│   ├── vite.config.js        # Vite 配置
-│   ├── dist/                 # 构建输出目录
-│   └── src/                  # 前端源码
-│       ├── main.js           # Vue 入口
-│       ├── App.vue           # 主组件
-│       ├── router/           # 路由配置
-│       └── views/            # 页面组件
-│           ├── Chat.vue      # 聊天界面
-│           ├── Login.vue     # 登录界面
-│           └── Register.vue  # 注册界面
-├── .venv/                    # Python虚拟环境
-├── .vscode/                  # VS Code配置
-└── README.md                 # 项目说明
+├── backend/
+│   ├── main.py                       # 入口壳，从 app.main 导入 app
+│   ├── requirements.txt              # 依赖清单
+│   ├── .env                          # 环境变量（含 DEEPSEEK_API_KEY，不入库）
+│   ├── .env.example                  # 环境变量示例
+│   ├── chat.db                       # SQLite 数据库（首次启动自动生成）
+│   └── app/                          # 应用包
+│       ├── __init__.py
+│       ├── main.py                   # FastAPI 工厂函数：创建 app + CORS + 路由注册 + 启动时建表
+│       ├── api/                      # API 路由层（只处理 HTTP、注入依赖、捕获异常）
+│       │   ├── __init__.py
+│       │   ├── auth.py               # /register, /login
+│       │   ├── categories.py         # GET/POST/PUT/DELETE /categories*
+│       │   ├── chat.py               # /chat (SSE), /ai-classify
+│       │   └── conversations.py      # /conversations*, /messages, /history
+│       ├── core/                     # 横切关注点：配置、安全
+│       │   ├── __init__.py
+│       │   ├── config.py             # 统一配置（JWT/DB/DeepSeek）
+│       │   └── security.py           # JWT 创建、密码哈希、get_current_user
+│       ├── db/                       # 数据库基础：连接、初始化、迁移
+│       │   ├── __init__.py
+│       │   ├── database.py           # SQLAlchemy engine / Session / Base
+│       │   └── init_db.py            # 建表 + 列迁移 + 消息统计回填 + 分类时间戳回填
+│       ├── models/                   # SQLAlchemy ORM 模型（与原表结构 1:1）
+│       │   ├── __init__.py
+│       │   ├── user.py
+│       │   ├── conversation.py
+│       │   ├── category.py
+│       │   └── message.py
+│       ├── schemas/                  # Pydantic 请求/响应 DTO
+│       │   ├── __init__.py
+│       │   ├── auth.py               # UserCreate, UserInfo, Token
+│       │   ├── chat.py               # ChatRequest, Message, ChatHistory
+│       │   ├── conversation.py       # ConversationCreate, ConversationInfo
+│       │   └── category.py           # CategoryCreate, CategoryUpdate, CategoryInfo
+│       └── services/                 # 业务逻辑层（可单元测试，不感知 HTTP）
+│           ├── __init__.py
+│           ├── auth_service.py       # get_user_by_username / create_user（密码哈希）
+│           ├── chat_service.py       # 模板化 AI 回复（按分类选风格）+ SSE 迭代器
+│           ├── classification.py     # DeepSeek AI 分类 + 关键词兜底
+│           └── conversation.py       # 会话/消息/历史 CRUD + 状态校验
+├── frontend/
+│   ├── index.html
+│   ├── package.json
+│   ├── vite.config.js                # /api 代理 → http://127.0.0.1:8000
+│   └── src/
+│       ├── main.js
+│       ├── App.vue
+│       ├── router/index.js
+│       ├── utils/
+│       │   └── request.js            # axios 封装（token 注入 + 401 自动登出）
+│       ├── api/                      # 前后端 API 契约层
+│       │   ├── auth.js               # login / register / logout / syncGlobalAuthorization
+│       │   ├── categories.js         # getCategories / createCategory / updateCategory / deleteCategory
+│       │   ├── chat.js               # aiClassify / chatStream（流式 fetch）
+│       │   └── conversations.js      # getConversations / createConversation / deleteConversation / updateConversationStatus / getMessages / getHistory
+│       └── views/
+│           ├── Login.vue
+│           ├── Register.vue
+│           └── Chat.vue
+├── .vscode/launch.json
+└── README.md
 ```
 
-## 后端配置与运行
+## 快速启动
 
-### 1. 安装依赖
-
-使用虚拟环境安装依赖：
+### 后端
 
 ```bash
-# 创建虚拟环境（如果尚未创建）
+# 1. 虚拟环境 & 依赖
 python -m venv .venv
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+# 或直接使用 venv 的 Python：.venv\Scripts\python.exe
 
-# 激活虚拟环境（Windows）
-.venv\Scripts\activate
-
-# 安装依赖
 cd backend
 pip install -r requirements.txt
-```
 
-### 2. 配置环境变量
-
-复制 `.env.example` 为 `.env` 并填写智谱GLM API Key：
-
-```bash
-# Windows
+# 2. 环境变量（复制示例后填入真实 Key）
 copy .env.example .env
+# 编辑 backend/.env：DEEPSEEK_API_KEY=sk-xxxxxxxx
 
-# Linux/Mac
-cp .env.example .env
+# 3. 启动（自动建表 + 初始化 5 个默认分类 + 回填历史空值字段）
+uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-编辑 `.env` 文件：
+- Swagger UI：http://127.0.0.1:8000/docs
+- OpenAPI JSON：http://127.0.0.1:8000/openapi.json
 
-```
-ZHIPU_API_KEY=your_zhipu_api_key_here
-```
-
-### 3. 运行后端服务
-
-```bash
-# 在backend目录下
-uvicorn main:app --reload
-
-# 或在项目根目录下
-uvicorn backend.main:app --reload
-```
-
-后端服务将在 `http://127.0.0.1:8000` 运行。
-
-## 前端配置与运行
-
-### 1. 安装依赖
+### 前端
 
 ```bash
 cd frontend
 npm install
+npm run dev          # 开发：http://localhost:3000
+npm run build        # 生产构建 → dist/
 ```
 
-### 2. 运行前端服务
+## 接口总览（15 条业务路由，路径与原项目零变化）
 
-```bash
-npm run dev
+| 方法 | 路径 | 说明 | 鉴权 |
+|---|---|---|---|
+| POST | /register | 用户注册 | 否 |
+| POST | /login | OAuth2 form 登录，返回 JWT | 否 |
+| GET | /health | 健康检查 | 否 |
+| GET | /categories | 分类列表 | 否 |
+| GET | /categories/{category_id} | 分类详情 | 否 |
+| POST | /categories | 新建分类 | 是 |
+| PUT | /categories/{category_id} | 更新分类 | 是 |
+| DELETE | /categories/{category_id} | 删除分类 | 是 |
+| GET | /conversations | 当前用户会话列表 | 是 |
+| POST | /conversations | 新建会话 | 是 |
+| DELETE | /conversations/{id} | 删除会话（级联删消息） | 是 |
+| PUT | /conversations/{id}/status | 更新会话状态 | 是 |
+| POST | /ai-classify | AI 自动问题分类 | 是 |
+| POST | /chat | 发送消息 → SSE 流式回复 | 是 |
+| GET | /messages | 消息列表（旧接口） | 是 |
+| GET | /history | 聊天历史（含用户/AI/分类） | 是 |
+
+> 详细请求/响应结构见 `docs/api.md`（如单独创建）。
+
+## 核心功能与实现要点
+
+### 1. 密码哈希（兼容旧数据）
+统一使用 `hashlib.sha256(salt + password + salt)`，salt = `"my_salt_123"`。
+- 注册与登录使用完全相同的算法；
+- `auth_service` 与 `core/security` 均实现该算法（前者避免引入循环依赖，后者用于登录校验）。
+
+### 2. JWT 认证
+- `create_access_token(data, expires_delta)`：使用 PyJWT，HS256；
+- `get_current_user`：FastAPI `Depends`，校验 token → 取 username → 查 DB → 返回 User；
+- 内部对 `auth_service` 做**延迟导入**解决 `core.security ⇄ services.auth_service` 的循环依赖。
+
+### 3. 数据库初始化（向后兼容）
+`init_database()` 在启动时自动执行，对老 DB 无破坏性：
+1. `create_all` 建不存在的表；
+2. 对 `chat_messages` / `conversations` 老表若缺少 `category / category_id / status / last_message / message_count` 字段，逐个 `ALTER TABLE ADD COLUMN`；
+3. 根据消息表回填所有会话的 `message_count` / `last_message`；
+4. 若 `categories` 不存在则建表并插入 5 个默认分类（含时间戳）；
+5. **回填遗留 NULL 时间戳**：对早期用裸 SQL 插入的分类行，若 `created_at IS NULL OR updated_at IS NULL` 则用当前时间写入；
+6. 自动打印 `users` 表字段用于自检。
+
+### 4. AI 自动分类
+`services/classification.ai_classify(db, user_input)`：
+- 取 DB 中 categories → 拼 prompt → 调 DeepSeek chat completion；
+- 无 Key / HTTP 失败 / 解析失败 → 关键词规则兜底（登录/注册→账户，订单/支付→订单，产品/使用→产品，售后/退款→售后，否则→其他）；
+- 兜底可脱离网络运行，保证功能闭环。
+
+### 5. 流式对话（SSE）
+`POST /chat` 使用 FastAPI `StreamingResponse`，MIME=`text/event-stream`：
+1. 先将 `(用户输入, 空回复, 分类)` 写入 `chat_messages` 拿到 `message_id`；
+2. `services/chat_service` 按分类挑模板 → 组合完整回答 → 按**字符**切成 chunk；
+3. 每 0.04s yield `data: <chunk>\n\n`，最后 `data: [DONE]`；
+4. 流式结束前 `UPDATE chat_messages SET response=? WHERE id=?` 持久化 AI 回复；
+5. 同时更新会话的 `message_count` 与 `last_message`。
+
+### 6. 前端请求统一封装
+`utils/request.js`：
+- `baseURL = '/api'`（Vite 代理到后端 8000）；
+- `request` 实例拦截器：请求前自动从 `localStorage.token` 注入 `Authorization: Bearer …`；
+- 响应拦截：若 `401` 则清 token 并跳转登录页；
+- `syncGlobalAuthorization()`：同步**全局** `axios.defaults.headers.common.Authorization`（兼容 Chat.vue 内 `fetch` 直连与历史场景）。
+
+## 环境变量（backend/.env）
+
+```
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-前端服务将在 `http://localhost:3000` 运行。
+- 变量名保持 `DEEPSEEK_API_KEY`（与原约定一致，未改动 Key 名称）；
+- 仅从 `backend/.env` 读取（python-dotenv 加载），**不** 写入任何代码；
+- 如未配置 Key，系统仍可运行：AI 分类自动切换关键词兜底，聊天使用内置模板回复。
 
-### 3. 构建前端项目
+## 测试与验证
 
-```bash
-npm run build
-```
+重构完成后执行的校验：
 
-构建输出将保存在 `frontend/dist` 目录中。
-
-## API 接口
-
-### 用户认证接口
-
-#### POST /register
-用户注册
-
-**请求体**:
-```json
-{
-  "username": "用户名",
-  "password": "密码"
-}
-```
-
-**响应**:
-```json
-{
-  "id": 1,
-  "username": "用户名",
-  "created_at": "2024-01-01T00:00:00"
-}
-```
-
-#### POST /login
-用户登录
-
-**请求体**:
-```json
-{
-  "username": "用户名",
-  "password": "密码"
-}
-```
-
-**响应**:
-```json
-{
-  "access_token": "jwt_token",
-  "token_type": "bearer"
-}
-```
-
-### 会话管理接口
-
-#### GET /conversations
-获取用户所有会话
-
-**响应**:
-```json
-[
-  {
-    "id": 1,
-    "title": "会话标题",
-    "user_id": 1,
-    "status": "active",
-    "last_message": "最后一条消息预览...",
-    "message_count": 5,
-    "created_at": "2024-01-01T00:00:00",
-    "updated_at": "2024-01-01T00:00:00"
-  }
-]
-```
-
-#### POST /conversations
-创建新会话
-
-**请求体**:
-```json
-{
-  "title": "会话标题"
-}
-```
-
-**响应**:
-```json
-{
-  "id": 1,
-  "title": "会话标题",
-  "user_id": 1,
-  "status": "active",
-  "last_message": null,
-  "message_count": 0,
-  "created_at": "2024-01-01T00:00:00",
-  "updated_at": "2024-01-01T00:00:00"
-}
-```
-
-#### DELETE /conversations/{conversation_id}
-删除会话
-
-**响应**:
-```json
-{
-  "message": "会话已删除"
-}
-```
-
-#### PUT /conversations/{conversation_id}/status
-更新会话状态
-
-**请求体**:
-```json
-{
-  "status": "active|ended|archived"
-}
-```
-
-**响应**:
-```json
-{
-  "message": "会话状态已更新",
-  "conversation": {
-    "id": 1,
-    "title": "会话标题",
-    "user_id": 1,
-    "status": "ended",
-    "last_message": "最后一条消息预览...",
-    "message_count": 5,
-    "created_at": "2024-01-01T00:00:00",
-    "updated_at": "2024-01-01T00:00:00"
-  }
-}
-```
-
-### 聊天接口
-
-#### POST /chat
-发送消息并获取 AI 回复（流式输出）
-
-**请求体**:
-```json
-{
-  "user_input": "你的问题",
-  "conversation_id": 1,
-  "category": "账户问题"
-}
-```
-
-**响应**:
-```
-data: 你
-data: 好
-data: ！
-data: [DONE]
-```
-
-### 问题分类接口
-
-#### POST /ai-classify
-**新增**：AI 自动分类接口，自动识别用户问题所属分类
-
-**请求体**:
-```json
-{
-  "user_input": "你的问题内容"
-}
-```
-
-**响应**:
-```json
-{
-  "category": "账户问题"
-}
-```
-
-#### GET /categories
-获取所有分类
-
-**响应**:
-```json
-[
-  {
-    "id": 1,
-    "name": "账户问题",
-    "description": "登录、注册、密码等相关问题",
-    "created_at": "2024-01-01T00:00:00",
-    "updated_at": "2024-01-01T00:00:00"
-  },
-  {
-    "id": 2,
-    "name": "订单咨询",
-    "description": "下单、支付、物流等相关问题",
-    "created_at": "2024-01-01T00:00:00",
-    "updated_at": "2024-01-01T00:00:00"
-  }
-]
-```
-
-#### POST /categories
-创建新分类
-
-**请求体**:
-```json
-{
-  "name": "新分类",
-  "description": "分类描述"
-}
-```
-
-**响应**:
-```json
-{
-  "id": 6,
-  "name": "新分类",
-  "description": "分类描述",
-  "created_at": "2024-01-01T00:00:00",
-  "updated_at": "2024-01-01T00:00:00"
-}
-```
-
-#### GET /categories/{category_id}
-获取单个分类
-
-**响应**:
-```json
-{
-  "id": 1,
-  "name": "账户问题",
-  "description": "登录、注册、密码等相关问题",
-  "created_at": "2024-01-01T00:00:00",
-  "updated_at": "2024-01-01T00:00:00"
-}
-```
-
-#### PUT /categories/{category_id}
-更新分类
-
-**请求体**:
-```json
-{
-  "name": "更新后的分类名称",
-  "description": "更新后的分类描述"
-}
-```
-
-**响应**:
-```json
-{
-  "id": 1,
-  "name": "更新后的分类名称",
-  "description": "更新后的分类描述",
-  "created_at": "2024-01-01T00:00:00",
-  "updated_at": "2024-01-01T00:00:00"
-}
-```
-
-#### DELETE /categories/{category_id}
-删除分类
-
-**响应**:
-```json
-{
-  "message": "分类已删除"
-}
-```
-
-## 功能说明
-
-### 核心客服功能
-
-1. **AI 自动问题分类**：
-   - 预设5个常用分类：账户问题、订单咨询、产品咨询、售后问题、其他问题
-   - **新增**：AI 自动识别用户问题并分类，无需手动选择
-   - 支持自定义添加、修改、删除分类
-   - 显示最近使用的分类，方便快速选择
-   - 每条消息自动显示对应的分类标签
-
-2. **会话管理**：
-   - 创建、查看、删除会话
-   - 会话状态管理：进行中、已结束、已归档
-   - 显示会话最后一条消息预览
-   - 统计会话消息数量
-   - 支持修改会话状态
-
-3. **智能客服回复**：
-   - 集成智谱GLM API，提供智能回复
-   - **新增**：根据不同问题分类，使用不同风格的回答
-     - 账户问题：专业严谨的风格
-     - 订单咨询：详细查询的风格
-     - 产品咨询：产品介绍的风格
-     - 售后问题：道歉解决的风格
-     - 其他问题：通用友好的风格
-   - 流式输出，逐字显示回复内容
-   - 每条消息显示对应的分类标签
-
-4. **用户认证**：
-   - 用户注册功能
-   - JWT 认证登录
-   - 安全的密码哈希存储
-
-5. **数据持久化**：
-   - 所有聊天记录保存到 SQLite 数据库
-   - 会话信息、分类信息持久化存储
-   - 分类信息和消息关联存储
-
-### 技术特性
-
-1. **前后端分离架构**：前端和后端完全分离，通过 API 进行通信
-2. **响应式设计**：适配不同屏幕尺寸，支持移动端访问
-3. **实时更新**：会话状态和消息数量实时更新
-4. **开发便捷**：支持热重载，提高开发效率
-5. **向后兼容**：支持现有数据，无需数据迁移
-
-## 客服工作流程
-
-1. **用户登录**：用户通过注册或登录进入系统
-2. **创建会话**：用户创建新的聊天会话
-3. **发送消息**：用户输入并发送问题
-4. **AI 自动分类**：系统自动识别问题所属的分类（账户问题/订单咨询/产品咨询/售后问题/其他问题）
-5. **AI 智能回复**：系统根据分类结果，使用对应风格生成智能回复
-   - 账户问题：专业严谨的风格
-   - 订单咨询：详细查询的风格
-   - 产品咨询：产品介绍的风格
-   - 售后问题：道歉解决的风格
-   - 其他问题：通用友好的风格
-6. **查看记录**：用户可查看历史聊天记录
-7. **结束会话**：问题解决后，用户可将会话标记为已结束
-8. **归档管理**：对于已解决的会话，可进行归档处理
+| 验证项 | 结果 |
+|---|---|
+| FastAPI 路由 import（冷启动无循环依赖） | ✅ |
+| openapi.json 注册的业务路径数（15 条，GET/POST/PUT/DELETE） | ✅ 15 |
+| `POST /register` → `POST /login` → JWT 注入后续请求 | ✅ |
+| 重复注册（400）/ 错密码（401）/ 无 token（401） | ✅ |
+| 分类列表/详情/新建/更新/删除 → 时间戳回填 NULL | ✅ |
+| 会话创建/列表/更新状态/级联删除 → message_count/last_message 同步 | ✅ |
+| AI 分类 5 用例（登录/订单/产品/售后/其他） | ✅ 全命中 |
+| `POST /chat` SSE 流式逐字 + `[DONE]` 结束 | ✅ Content-Type: text/event-stream |
+| `/messages` + `/history` schema 字段完整性 | ✅ |
+| `GET /health` | ✅ |
+| 前端 `npm run build` | ✅ 通过（仅 chunk size 非致命警告） |
 
 ## 注意事项
 
-1. 确保你已经拥有智谱GLM API Key，可在智谱AI官网申请。
-2. 前端服务通过 Vite 代理将 `/api` 请求转发到后端 `http://127.0.0.1:8000`。
-3. 在生产环境中，建议修改 CORS 配置，只允许特定的前端域名访问后端 API。
-4. 首次运行时，系统会自动创建数据库表和默认分类数据。
-5. 使用虚拟环境可以避免依赖冲突，建议在开发时使用虚拟环境。
-
-## 开发说明
-
-### 后端开发
-
-后端使用 FastAPI 框架，主要功能包括：
-- 聊天接口实现（支持流式输出）
-- 数据库模型定义（用户、会话、消息、分类）
-- JWT 认证与授权
-- 智谱GLM API 集成
-- **新增**：AI 自动分类接口，实现问题自动识别
-- **新增**：基于分类结果的不同风格回答生成
-- 环境变量配置
-- 异常处理与日志记录
-- CORS 支持
-- 问题分类管理接口
-- 会话状态管理
-
-### 前端开发
-
-前端使用 Vue 3 + Element Plus，主要功能包括：
-- 响应式聊天界面设计
-- **新增**：AI 自动分类功能集成，无需手动选择分类
-- 用户登录与注册页面
-- 会话列表与管理
-- 消息发送与接收（支持流式显示）
-- 自动分类标签显示（无需手动选择）
-- 会话状态展示
-- 聊天记录展示（含分类标签）
-- API 调用封装
-- 实时更新与状态管理
-
-## 数据库结构
-
-### 用户表（users）
-- id: 主键
-- username: 用户名
-- password_hash: 密码哈希值
-- created_at: 创建时间
-
-### 会话表（conversations）
-- id: 主键
-- title: 会话标题
-- user_id: 外键，关联用户表
-- status: 会话状态（active, ended, archived）
-- last_message: 最后一条消息预览
-- message_count: 消息数量
-- created_at: 创建时间
-- updated_at: 更新时间
-
-### 聊天消息表（chat_messages）
-- id: 主键
-- conversation_id: 外键，关联会话表
-- user_input: 用户输入
-- ai_response: AI 回复
-- category: 问题分类
-- created_at: 创建时间
-
-### 分类表（categories）
-- id: 主键
-- name: 分类名称
-- description: 分类描述
-- created_at: 创建时间
-- updated_at: 更新时间
+1. **CORS**：当前允许 `*` 仅用于开发，生产请在 `app/main.py` CORSMiddleware 中收紧 `allow_origins`；
+2. **JWT Secret**：`core/config.SECRET_KEY` 有默认占位值，生产务必替换为强随机值（或从环境变量读）；
+3. **Vite 代理**：`vite.config.js` 将 `/api` → `http://127.0.0.1:8000` 并 **剥离 `/api` 前缀**，与后端路由（根级 `/chat` 等）天然匹配；
+4. **SSE + nginx**：若前置 nginx，需关闭缓冲 `proxy_buffering off;`，否则浏览器收不到逐字 chunk；
+5. **密码迁移**：自定义 hashlib 实现与历史数据完全一致；若切换到 bcrypt/argon2 需要额外的迁移策略（本次未变）。
