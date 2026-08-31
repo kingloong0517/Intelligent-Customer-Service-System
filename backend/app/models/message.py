@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, ForeignKey
 
 from app.db.database import Base
 
@@ -13,4 +13,5 @@ class ChatMessage(Base):
     response = Column(String)
     category_id = Column(Integer, ForeignKey("categories.id"), nullable=True, index=True)
     category = Column(String, nullable=True, index=True)
+    rag_used = Column(Boolean, nullable=True, default=False)  # P2.2：本次回答是否命中 RAG
     created_at = Column(DateTime, default=datetime.datetime.utcnow)

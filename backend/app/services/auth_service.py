@@ -19,9 +19,8 @@ def get_user_by_username(db: Session, username: str) -> User:
 
 
 def create_user(db: Session, username: str, password: str) -> User:
-    """与原 main.py 409-424 完全一致：自定义 hashlib 哈希"""
+    """自定义 hashlib 哈希（与 core/security 同算法，历史数据兼容）"""
     hashed_password = _custom_hash_password(password)
-    print(f"[auth_service] 注册密码哈希: {hashed_password}")
 
     db_user = User(username=username, password=hashed_password)
     db.add(db_user)

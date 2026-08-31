@@ -1,7 +1,9 @@
 """
 AI 自动分类：优先调 DeepSeek API，失败则用关键词兜底
 与原 main.py 623-712 逻辑完全一致；密钥从 config 读取，不再硬编码
+P4.1：print → 统一 logger；不记录用户问题全文（隐私），只记录分类结果与降级原因
 """
+import logging
 from typing import List
 
 import requests
@@ -9,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import DEEPSEEK_API_KEY, DEEPSEEK_API_URL
 from app.models.category import Category
+
+logger = logging.getLogger("classification")
 
 
 def _build_classify_prompt(user_input: str, category_names: List[str]) -> str:
@@ -41,12 +45,9 @@ def ai_classify(db: Session, user_input: str) -> str:
     categories = db.query(Category).all()
     category_names = [cat.name for cat in categories]
 
-    print(f"[classification] 用户问题: {user_input}")
-    print(f"[classification] 可用分类: {category_names}")
-
     # 如果没有配置密钥，直接走兜底
     if not DEEPSEEK_API_KEY:
-        print("[classification] 无 DEEPSEEK_API_KEY，使用关键词兜底")
+        logger.warning("no api key configured, keyword fallback (configured=false)")
         return _keyword_fallback(user_input)
 
     try:
@@ -64,25 +65,22 @@ def ai_classify(db: Session, user_input: str) -> str:
             "max_tokens": 10,
         }
 
-        print(f"[classification] 调用 DeepSeek API...")
         response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=15)
         response.raise_for_status()
         result = response.json()
 
         category = result["choices"][0]["message"]["content"].strip()
-        print(f"[classification] DeepSeek API返回的分类: {category}")
-
         if category not in category_names:
-            print(f"[classification] 分类'{category}'不在预定义列表中，使用默认分类")
+            logger.info("classify result=%s invalid, use default", category)
             category = "其他问题"
         else:
-            print(f"[classification] 分类'{category}'有效")
+            logger.info("classify result=%s", category)
 
         return category
 
     except requests.RequestException as e:
-        print(f"[classification] 调用DeepSeek API错误: {str(e)}，使用关键词兜底")
+        logger.warning("classify api error: %s, keyword fallback", e)
         return _keyword_fallback(user_input)
     except Exception as e:
-        print(f"[classification] 分类错误: {str(e)}，返回默认分类")
+        logger.error("classify error: %s, use default", e)
         return "其他问题"

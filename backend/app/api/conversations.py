@@ -3,6 +3,7 @@
 /conversations*、/messages、/history
 路径、请求方式、响应结构与原 main.py 474-549 + 821-865 完全一致
 """
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,6 +24,8 @@ from app.services.conversation import (
     update_conversation_status,
 )
 
+logger = logging.getLogger("api.conversations")
+
 router = APIRouter()
 
 
@@ -35,11 +38,8 @@ def get_conversations(
     try:
         return list_conversations(db, current_user.id)
     except Exception as e:
-        print(f"[api/conversations] 获取会话列表错误: {type(e).__name__}: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"获取会话列表失败: {str(e)}")
+        logger.exception("list conversations failed: %s: %s", type(e).__name__, e)
+        raise HTTPException(status_code=500, detail="获取会话列表失败，请稍后重试")
 
 
 @router.post("/conversations", response_model=ConversationInfo)

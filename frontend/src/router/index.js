@@ -1,11 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
-// 组件导入
-import Login from '../views/Login.vue'
-import Register from '../views/Register.vue'
-import Chat from '../views/Chat.vue'
-
-// 路由配置
+// P5.2：Vue Router 懒加载，首屏只加载 Login/Register，
+// Chat/Knowledge 进入时才加载，减少初始 bundle 体积
 const routes = [
   {
     path: '/',
@@ -14,18 +10,24 @@ const routes = [
   {
     path: '/login',
     name: 'Login',
-    component: Login
+    component: () => import('../views/Login.vue')
   },
   {
     path: '/register',
     name: 'Register',
-    component: Register
+    component: () => import('../views/Register.vue')
   },
   {
     path: '/chat',
     name: 'Chat',
-    component: Chat,
-    meta: { requiresAuth: true } // 需要认证的路由
+    component: () => import('../views/Chat.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/knowledge',
+    name: 'Knowledge',
+    component: () => import('../views/Knowledge.vue'),
+    meta: { requiresAuth: true }
   }
 ]
 

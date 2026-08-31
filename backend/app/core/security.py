@@ -64,18 +64,14 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        print(f"[security] 收到的token: {token}")
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        print(f"[security] 解码后的payload: {payload}")
         username: str = payload.get("sub")
-        print(f"[security] 获取到的用户名: {username}")
         if username is None:
             raise credentials_exception
-    except JWTError as e:
-        print(f"[security] JWT解码错误: {type(e).__name__}: {str(e)}")
+    except JWTError:
+        # 不打印 token 内容，避免敏感信息泄漏到日志
         raise credentials_exception
     user = get_user_by_username(db, username=username)
-    print(f"[security] 查询到的用户: {user}")
     if user is None:
         raise credentials_exception
     return user

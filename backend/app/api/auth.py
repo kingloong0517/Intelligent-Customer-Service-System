@@ -3,7 +3,7 @@
 路径、请求方式、响应结构与原 main.py 401-470 完全一致
 """
 import datetime
-import traceback
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
@@ -15,6 +15,8 @@ from app.db.database import get_db
 from app.schemas.auth import Token, UserCreate, UserInfo
 from app.services.auth_service import create_user, get_user_by_username
 
+logger = logging.getLogger("api.auth")
+
 router = APIRouter()
 
 
@@ -25,15 +27,14 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         if db_user:
             raise HTTPException(status_code=400, detail="用户名已存在")
 
-        print(f"[api/auth] 注册密码: {user.password}")
         db_user = create_user(db, username=user.username, password=user.password)
         return UserInfo.from_orm(db_user)
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[api/auth] 注册错误详情: {type(e).__name__}: {str(e)}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"注册失败: {str(e)}")
+        # P4.1：详细错误只进日志（含 request_id/traceback），前端不收内部异常细节
+        logger.exception("register failed: %s: %s", type(e).__name__, e)
+        raise HTTPException(status_code=500, detail="注册失败，请稍后重试")
 
 
 @router.post("/login", response_model=Token)
@@ -63,6 +64,5 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[api/auth] 登录错误详情: {type(e).__name__}: {str(e)}")
-        traceback.print_exc()
+        logger.exception("login failed: %s: %s", type(e).__name__, e)
         raise

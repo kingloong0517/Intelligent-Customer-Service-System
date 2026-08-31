@@ -1,0 +1,59 @@
+# docker-compose.yml - AI 客服系统一键部署
+# 用法：
+#   docker compose up -d --build     # 构建并启动
+#   docker compose down              # 停止（数据保留在 ./data/）
+#
+# 环境变量：从本文件同目录 .env 读取（复制 .env.example 后填入），未配置的项使用默认值。
+# 真实 API Key 只存在于 .env（已被 .gitignore 排除），绝不写入镜像或代码。
+services:
+  backend:
+    build: ./backend
+    container_name: ai-chat-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # ---- 数据与文件路径（全部指向挂载卷，容器重建不丢数据）----
+      DATABASE_URL: sqlite:////app/data/chat.db
+      KB_UPLOAD_DIR: /app/uploads/kb
+      VECTOR_STORE_DIR: /app/vector_store
+      HF_HOME: /app/hf_cache
+      HF_HUB_CACHE: /app/hf_cache/hub
+      # 国内镜像下载模型；已缓存后 embedder.py 自动 HF_HUB_OFFLINE=1 离线加载
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      # ---- LLM（DeepSeek，Key 通过环境变量注入，可为空走模板降级）----
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.7}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1024}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-60}
+      # ---- JWT（生产请替换为强随机值）----
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+      # ---- Embedding（本地模型 BAAI/bge-small-zh-v1.5）----
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-local}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
+      # ---- 日志（P4.1）----
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./data/sqlite:/app/data          # SQLite 数据库
+      - ./data/uploads:/app/uploads      # 知识库上传文档
+      - ./data/vector_store:/app/vector_store  # 向量库
+      - ./data/hf_cache:/app/hf_cache    # Embedding 模型缓存（首次下载后持久化）
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # 首次启动可能下载 Embedding 模型
+  frontend:
+    build: ./frontend
+    container_name: ai-chat-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"   # 与本地开发习惯一致：http://localhost:3000
+    depends_on:
+      backend:
+        condition: service_healthy

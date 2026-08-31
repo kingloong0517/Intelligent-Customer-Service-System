@@ -89,7 +89,10 @@ def list_messages(
         if not get_conversation_of_user(db, conversation_id, user_id):
             return "会话不存在", []
         query = query.filter(ChatMessage.conversation_id == conversation_id)
-    rows = query.order_by(ChatMessage.created_at.asc()).offset(skip).limit(limit).all()
+    # P5.1 P1-5：返回最新 N 条（desc + limit 后 reverse 恢复时间正序），
+    # 避免超过 limit 条消息时用户看不到最新消息
+    rows = query.order_by(ChatMessage.created_at.desc()).offset(skip).limit(limit).all()
+    rows.reverse()
     return None, rows
 
 
@@ -105,5 +108,7 @@ def list_history(
         if not get_conversation_of_user(db, conversation_id, user_id):
             return "会话不存在", []
         query = query.filter(ChatMessage.conversation_id == conversation_id)
-    rows = query.order_by(ChatMessage.created_at.asc()).offset(skip).limit(limit).all()
+    # P5.1 P1-5：返回最新 N 条（desc + limit 后 reverse 恢复时间正序）
+    rows = query.order_by(ChatMessage.created_at.desc()).offset(skip).limit(limit).all()
+    rows.reverse()
     return None, [ChatHistory.from_orm(m) for m in rows]

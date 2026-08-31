@@ -71,6 +71,7 @@
             <el-option label="已结束" value="ended"></el-option>
             <el-option label="已归档" value="archived"></el-option>
           </el-select>
+          <el-button @click="$router.push('/knowledge')">知识库</el-button>
           <el-button type="warning" @click="handleLogout">退出登录</el-button>
         </div>
       </div>
@@ -97,8 +98,27 @@
           <div v-if="msg.response" class="message-bubble ai-message">
             <div class="message-header">
               <strong class="message-author">AI</strong>
+              <el-tag v-if="msg.ragUsed" type="primary" size="small" effect="plain">知识库</el-tag>
             </div>
             <div class="message-content" v-html="renderMarkdown(msg.response)"></div>
+            <!-- P5.2：RAG/Tool 状态进度（流式中间状态，done 后会被 onDone 重新加载历史覆盖） -->
+            <div v-if="msg.statusSteps && msg.statusSteps.length" class="status-steps">
+              <div v-for="(step, si) in msg.statusSteps" :key="si" class="status-step" :class="'step-' + step.type">
+                <span class="step-icon">{{ step.type === 'rag' ? '📚' : step.type === 'tool' ? '🔧' : '⏳' }}</span>
+                <span class="step-text">{{ step.text }}</span>
+                <span v-if="step.ok !== undefined" class="step-ok">{{ step.ok ? '✓' : '✗' }}</span>
+              </div>
+            </div>
+            <!-- RAG 参考来源（仅知识库命中时展示，citation 均来自真实检索） -->
+            <div v-if="msg.citations && msg.citations.length" class="citation-panel">
+              <div class="citation-title">参考来源</div>
+              <div v-for="(c, ci) in msg.citations" :key="ci" class="citation-item">
+                <span class="citation-icon">📄</span>
+                <span class="citation-filename">{{ c.filename }}</span>
+                <span class="citation-chunk">第 {{ c.chunk_index + 1 }} 个知识片段</span>
+                <span class="citation-score">相似度 {{ (c.score * 100).toFixed(0) }}%</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -108,6 +128,20 @@
       </div>
       
       <div class="chat-input" v-if="currentConversationId">
+        <div class="input-status-row" v-if="streamingStatus">
+          <!-- P5.2：流式状态指示 -->
+          <span class="streaming-status" :class="'status-' + streamingStatus.type">
+            <span v-if="streamingStatus.type === 'thinking'" class="status-dot status-dot-thinking">思考中</span>
+            <span v-else-if="streamingStatus.type === 'generating'" class="status-dot status-dot-generating">生成中</span>
+            <span v-else-if="streamingStatus.type === 'error'" class="status-dot status-dot-error">生成失败</span>
+            <span v-else-if="streamingStatus.type === 'done'" class="status-dot status-dot-done">已完成</span>
+            <span v-if="streamingStatus.text"> · {{ streamingStatus.text }}</span>
+          </span>
+          <!-- P5.2：Request ID（开发调试用） -->
+          <span v-if="lastRequestId && isDev" class="request-id-tag">
+            请求 ID：{{ lastRequestId }}
+          </span>
+        </div>
         <!-- AI自动分类 - 隐藏手动选择器 -->
         <div class="category-selector" style="display: none;">
           <el-select v-model="selectedCategory" placeholder="请选择问题分类" size="small" style="width: 200px; margin-bottom: 12px;">
@@ -140,9 +174,24 @@
           type="textarea"
           :rows="3"
           placeholder="请输入消息..."
+          :disabled="isLoading"
           @keydown.enter="handleEnter"
         ></el-input>
-        <el-button type="primary" @click="sendMessage" :loading="isLoading">发送 (Enter/Shift+Enter换行)</el-button>
+        <div class="input-buttons">
+          <!-- P5.2：停止生成按钮（仅流式中显示） -->
+          <el-button 
+            v-if="isLoading && chatAbortController" 
+            type="danger" 
+            plain 
+            @click="stopGeneration"
+          >停止生成</el-button>
+          <el-button 
+            type="primary" 
+            @click="sendMessage" 
+            :loading="isLoading" 
+            :disabled="isLoading"
+          >发送 (Enter/Shift+Enter换行)</el-button>
+        </div>
       </div>
     </div>
     
@@ -164,7 +213,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -183,8 +232,34 @@ import { aiClassify, chatStream } from '../api/chat'
 
 // Markdown 渲染和代码高亮
 import { marked } from 'marked'
-import hljs from 'highlight.js'
+// P5.2：highlight.js 只加载 core + 常用语言，替代全量（全量 ~900KB → core 约 50KB）
+import hljs from 'highlight.js/lib/core'
+import javascript from 'highlight.js/lib/languages/javascript'
+import python from 'highlight.js/lib/languages/python'
+import bash from 'highlight.js/lib/languages/bash'
+import json from 'highlight.js/lib/languages/json'
+import xml from 'highlight.js/lib/languages/xml'
+import css from 'highlight.js/lib/languages/css'
+import sql from 'highlight.js/lib/languages/sql'
+import yaml from 'highlight.js/lib/languages/yaml'
+import plaintext from 'highlight.js/lib/languages/plaintext'
 import 'highlight.js/styles/github.css'
+
+// P5.2：注册常用语言
+hljs.registerLanguage('javascript', javascript)
+hljs.registerLanguage('js', javascript)
+hljs.registerLanguage('python', python)
+hljs.registerLanguage('py', python)
+hljs.registerLanguage('bash', bash)
+hljs.registerLanguage('shell', bash)
+hljs.registerLanguage('json', json)
+hljs.registerLanguage('xml', xml)
+hljs.registerLanguage('html', xml)
+hljs.registerLanguage('css', css)
+hljs.registerLanguage('sql', sql)
+hljs.registerLanguage('yaml', yaml)
+hljs.registerLanguage('yml', yaml)
+hljs.registerLanguage('plaintext', plaintext)
 
 // 配置 marked 支持代码高亮
 marked.setOptions({
@@ -204,15 +279,33 @@ marked.setOptions({
 // Markdown 渲染函数
 const renderMarkdown = (text) => {
   if (!text) return ''
+  // P5.1 P2-1：轻量 XSS 防护（不引入新依赖）：移除 script 标签与 on* 事件属性，
+  // 覆盖常见 XSS 注入向量；客服场景下 Markdown 渲染安全
   return marked(text)
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
 }
 
 const router = useRouter()
+
+// P5.2：开发环境标记（模板中不可直接使用 import.meta.env，故在此暴露）
+const isDev = import.meta.env.DEV
 
 // 聊天相关变量
 const userInput = ref('')
 const chatMessages = ref([])
 const isLoading = ref(false)
+
+// P5.2：流式状态（thinking/generating/done/error）与中间文本
+const streamingStatus = ref(null)
+// P5.2：最近一次请求的 Request ID（开发调试展示用）
+const lastRequestId = ref('')
+
+// P5.1 P2-3：SSE 流式请求的 AbortController，组件卸载时取消未完成的请求
+let chatAbortController = null
+// P5.2：标记本次流式是否被用户主动取消（AbortError 正常路径）
+let _userAborted = false
 
 // 会话相关变量
 const conversations = ref([])
@@ -450,22 +543,76 @@ const handleEnter = (event) => {
   // 如果按下Shift键，保持换行功能
 }
 
+// 滚动聊天区到底部
+const scrollToBottom = (delay = 0) => {
+  setTimeout(() => {
+    const chatMessagesElement = document.querySelector('.chat-messages')
+    if (chatMessagesElement) {
+      chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight
+    }
+  }, delay)
+}
+
+// P5.2：流式状态管理
+const setStreamingStatus = (type, text = '') => {
+  streamingStatus.value = type ? { type, text } : null
+  // done 后延迟清除状态条（让用户看到"已完成"状态）
+  if (type === 'done') {
+    setTimeout(() => { streamingStatus.value = null }, 2000)
+  } else if (type === 'error') {
+    setTimeout(() => { streamingStatus.value = null }, 5000)
+  }
+}
+
+// P5.2：停止生成 —— abort SSE，保留已生成内容，前端结束 loading
+const stopGeneration = () => {
+  _userAborted = true
+  if (chatAbortController) {
+    chatAbortController.abort()
+    chatAbortController = null
+  }
+  setStreamingStatus('error', '已手动停止')
+}
+
+// P5.2：Tool 名称 → 中文状态文案
+const _TOOL_LABEL = {
+  order_query: '订单查询',
+  logistics_query: '物流查询',
+  human_service: '人工客服转接',
+}
+
+// P5.2：RAG reason → 中文状态文案
+const _RAG_LABEL = {
+  ok: '检索到相关知识',
+  low_similarity: '知识相似度较低',
+  no_kb: '未配置知识库',
+  empty_kb: '知识库为空',
+}
+
 // 发送消息
 const sendMessage = async () => {
   if (!userInput.value.trim()) {
     ElMessage.warning('请输入消息内容')
     return
   }
-  
+
   if (!currentConversationId.value) {
     ElMessage.warning('请先选择或创建会话')
     return
   }
-  
+
+  // P5.2：防止重复发送
+  if (isLoading.value) {
+    ElMessage.warning('正在生成中，请稍候')
+    return
+  }
+
   isLoading.value = true
+  _userAborted = false
+  setStreamingStatus('thinking')
   const message = userInput.value.trim()
   userInput.value = ''
-  
+
   try {
     // 1. 先调用AI分类接口（request 封装，自动带 token）
     let category = '其他问题'
@@ -475,7 +622,7 @@ const sendMessage = async () => {
     } catch (err) {
       console.warn('AI 分类失败，使用默认分类：其他问题', err)
     }
-    
+
     // 创建临时的完整消息项（包含用户消息和AI回复）
     const tempMessage = {
       id: Date.now(),
@@ -483,52 +630,125 @@ const sendMessage = async () => {
       response: '',           // AI回复（初始为空）
       created_at: new Date().toISOString(),
       user_id: null,
-      category: category
+      category: category,
+      ragUsed: false,         // P2.2：RAG 是否命中
+      citations: [],          // P2.2：知识库引用来源
+      statusSteps: [],        // P5.2：RAG/Tool 状态步骤（展示用，done 后被覆盖）
     }
-    
+
     // 添加到聊天消息列表
     chatMessages.value.push(tempMessage)
-    
+
     // 保存临时消息的索引，用于后续更新
     const messageIndex = chatMessages.value.length - 1
-    
-    // 滚动到底部
-    setTimeout(() => {
-      const chatMessagesElement = document.querySelector('.chat-messages')
-      if (chatMessagesElement) {
-        chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight
-      }
-    }, 100)
-    
-    // 2. 使用分类结果发送聊天请求（SSE 流式）
-    await chatStream(
-      {
-        user_input: message,
-        conversation_id: currentConversationId.value,
-        category: category,
-      },
-      {
-        onChar: (char) => {
-          console.log('接收到字符:', char)
-          tempMessage.response += char
-          chatMessages.value[messageIndex] = { ...tempMessage }
-          setTimeout(() => {
-            const chatMessagesElement = document.querySelector('.chat-messages')
-            if (chatMessagesElement) {
-              chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight
+    scrollToBottom(100)
+
+    // 2. 发送聊天请求（事件化 SSE 流式）
+    chatAbortController = new AbortController()
+    try {
+      await chatStream(
+        {
+          user_input: message,
+          conversation_id: currentConversationId.value,
+          category: category,
+        },
+        {
+          // P5.2：Request ID 捕获
+          onRequestId: (rid) => {
+            lastRequestId.value = rid
+          },
+          // 服务端确认的分类
+          onCategory: (data) => {
+            if (data && data.category) {
+              tempMessage.category = data.category
+              chatMessages.value[messageIndex] = { ...tempMessage }
             }
-          }, 0)
+          },
+          // RAG 路由结论
+          onRag: (data) => {
+            if (!data) return
+            tempMessage.ragUsed = !!data.used
+            // P5.2：RAG 状态步骤
+            const ragText = data.used
+              ? `已参考知识库 · 相似度 ${((data.top_score || 0) * 100).toFixed(0)}%`
+              : (_RAG_LABEL[data.reason] || '知识库未命中')
+            tempMessage.statusSteps.push({ type: 'rag', text: ragText, ok: !!data.used })
+            setStreamingStatus('thinking', data.used ? '检索知识库中…' : '')
+            chatMessages.value[messageIndex] = { ...tempMessage }
+          },
+          // 知识库引用来源
+          onCitation: (data) => {
+            tempMessage.citations.push(data)
+            chatMessages.value[messageIndex] = { ...tempMessage }
+          },
+          // P5.2：Tool 开始执行
+          onToolStart: (data) => {
+            if (!data) return
+            const label = _TOOL_LABEL[data.tool] || data.tool
+            tempMessage.statusSteps.push({ type: 'tool', text: `${label}中…`, ok: undefined })
+            setStreamingStatus('thinking', `${label}中…`)
+            chatMessages.value[messageIndex] = { ...tempMessage }
+          },
+          // P5.2：Tool 执行完成
+          onToolResult: (data) => {
+            if (!data) return
+            const label = _TOOL_LABEL[data.tool] || data.tool
+            // 更新最后一个 tool step 的 ok 状态
+            const lastStep = tempMessage.statusSteps[tempMessage.statusSteps.length - 1]
+            if (lastStep && lastStep.type === 'tool' && !lastStep.ok) {
+              lastStep.ok = !!data.ok
+              lastStep.text = data.ok ? `${label}完成` : `${label}失败`
+            } else {
+              tempMessage.statusSteps.push({
+                type: 'tool', text: data.ok ? `${label}完成` : `${label}失败`, ok: !!data.ok,
+              })
+            }
+            chatMessages.value[messageIndex] = { ...tempMessage }
+          },
+          // 拼接 AI 回复片段
+          onMessage: (chunk) => {
+            tempMessage.response += chunk
+            // 首次收到 message 时切换为 generating 状态
+            if (streamingStatus.value?.type === 'thinking') {
+              setStreamingStatus('generating')
+            }
+            chatMessages.value[messageIndex] = { ...tempMessage }
+            scrollToBottom()
+          },
+          // 流内错误事件
+          onError: (err) => {
+            const msg = err?.message || ''
+            // P5.2：友好错误提示，不暴露 traceback
+            if (msg.includes('402') || msg.includes('Insufficient Balance')) {
+              ElMessage.warning('AI 服务余额不足，已切换为备用回复')
+            } else if (msg.includes('NetworkError') || msg.includes('Failed to fetch') || msg.includes('Network')) {
+              ElMessage.error('网络连接异常，请稍后重试')
+            } else {
+              ElMessage.error('AI 服务暂时不可用，请稍后重试')
+            }
+            setStreamingStatus('error', '生成失败')
+          },
+          // done 事件
+          onDone: async () => {
+            setStreamingStatus('done')
+            try {
+              await loadChatHistory(currentConversationId.value)
+              await loadConversations()
+            } catch (e) {
+              console.warn('刷新历史失败（done 后）', e)
+            }
+          },
         },
-        onDone: () => {
-          console.log('流式传输完成')
-        },
-        onError: (err) => {
-          throw err
-        },
-      }
-    )
-    
+        chatAbortController.signal
+      )
+    } finally {
+      chatAbortController = null
+    }
+
     // 更新最近使用的分类
+    if (tempMessage.category) {
+      category = tempMessage.category
+    }
     if (category) {
       const existingIndex = recentCategories.value.indexOf(category)
       if (existingIndex !== -1) {
@@ -539,20 +759,24 @@ const sendMessage = async () => {
         recentCategories.value.pop()
       }
     }
-    
-    // 延迟重新加载聊天记录，让用户有时间看到逐字效果
-    setTimeout(async () => {
-      await loadChatHistory(currentConversationId.value)
-      // 更新会话列表
-      await loadConversations()
-    }, 1000)
   } catch (error) {
-    console.error('发送消息失败:', error)
-    ElMessage.error('发送消息失败')
-    // 如果认证失败，跳转到登录页
-    if (error.response?.status === 401) {
-      handleLogout()
+    // P5.2：用户主动取消不算错误
+    if (_userAborted) {
+      setStreamingStatus('done')
+      return
     }
+    console.error('发送消息失败:', error)
+    // P5.2：友好错误提示，不暴露 traceback
+    const msg = error?.message || ''
+    if (msg.includes('NetworkError') || msg.includes('Failed to fetch') || msg.includes('Network')) {
+      ElMessage.error('网络连接异常，请稍后重试')
+    } else if (error.response?.status === 401) {
+      ElMessage.error('登录已过期，请重新登录')
+      handleLogout()
+    } else {
+      ElMessage.error('发送消息失败，请稍后重试')
+    }
+    setStreamingStatus('error', '发送失败')
   } finally {
     isLoading.value = false
   }
@@ -571,6 +795,14 @@ const handleLogout = () => {
 // 组件挂载时加载会话列表
 onMounted(() => {
   loadConversations()
+})
+
+// P5.1 P2-3：组件卸载时取消未完成的 SSE 流，避免回调操作已卸载的 ref
+onUnmounted(() => {
+  if (chatAbortController) {
+    chatAbortController.abort()
+    chatAbortController = null
+  }
 })
 </script>
 
@@ -779,6 +1011,42 @@ onMounted(() => {
   font-size: 16px;
   line-height: 1.7;
   color: #212529;
+}
+
+/* RAG 参考来源（P2.2） */
+.citation-panel {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-top: 1px dashed #e4e7ed;
+}
+
+.citation-title {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.citation-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #606266;
+  line-height: 1.8;
+}
+
+.citation-filename {
+  color: #409eff;
+}
+
+.citation-chunk {
+  color: #909399;
+}
+
+.citation-score {
+  margin-left: auto;
+  color: #67c23a;
 }
 
 .chat-input {
@@ -1081,4 +1349,107 @@ onMounted(() => {
     align-self: flex-start;
   }
 }
+
+/* P5.2：流式状态条 */
+.input-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.streaming-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.status-dot {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.status-dot-thinking {
+  background-color: #ecf5ff;
+  color: #409eff;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-dot-generating {
+  background-color: #f0f9eb;
+  color: #67c23a;
+}
+
+.status-dot-error {
+  background-color: #fef0f0;
+  color: #f56c6c;
+}
+
+.status-dot-done {
+  background-color: #f4f4f5;
+  color: #909399;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* P5.2：Request ID 调试标签 */
+.request-id-tag {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: #909399;
+  background-color: #f4f4f5;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+/* P5.2：按钮组 */
+.input-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.input-buttons .el-button {
+  flex: 1;
+}
+
+/* P5.2：Tool/RAG 状态步骤 */
+.status-steps {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-top: 1px dashed #e4e7ed;
+  background-color: #fafafa;
+  border-radius: 6px;
+}
+
+.status-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #606266;
+  line-height: 1.8;
+}
+
+.step-icon {
+  font-size: 14px;
+}
+
+.step-text {
+  flex: 1;
+}
+
+.step-ok {
+  font-weight: 600;
+}
+
+.step-rag .step-ok { color: #67c23a; }
+.step-tool .step-ok { color: #67c23a; }
+.step-tool.step-fail .step-ok { color: #f56c6c; }
 </style>

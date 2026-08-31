@@ -32,6 +32,7 @@ class ChatHistory(BaseModel):
     timestamp: datetime.datetime
     conversation_id: int
     category: Optional[str] = None
+    rag_used: Optional[bool] = None
 
     class Config:
         orm_mode = True
@@ -45,4 +46,5 @@ class ChatHistory(BaseModel):
             timestamp=obj.created_at,
             conversation_id=obj.conversation_id,
             category=obj.category,
+            rag_used=bool(getattr(obj, "rag_used", False) or False),
         )
